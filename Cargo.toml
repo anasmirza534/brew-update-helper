@@ -1,0 +1,15 @@
+[package]
+name = "brew-update-helper"
+version = "0.1.0"
+edition = "2021"
+description = "A CLI tool for selective Homebrew package upgrade management"
+authors = ["Anas Mirza <anasmirza534@gmail.com>"]
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.0", features = ["derive"] }
+chrono = "0.4"
+crossterm = "0.27"
+ratatui = "0.24"
+anyhow = "1.0"
+dirs = "5.0"
