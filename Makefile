@@ -7,5 +7,6 @@ claude:
 ci-cargo-cmds:
 	cargo test --verbose
 	CI=true cargo test --verbose
+	# cargo fix
 	cargo fmt --all -- --check
 	cargo clippy --all-targets --all-features -- -D warnings

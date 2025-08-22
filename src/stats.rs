@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::collections::HashMap;
-use std::process::Command;
 
 use crate::brew::{BrewExecutor, PackageType};
 
@@ -69,7 +68,7 @@ impl PackageStats {
 
         // Collect system information
         let homebrew_version = executor.get_version()?;
-        let system_info = collect_system_info()?;
+        let system_info = executor.get_system_info()?;
 
         // Calculate package changes
         let changes = calculate_package_changes(
@@ -196,62 +195,6 @@ fn count_enabled_disabled(packages: &[String], settings: &HashMap<String, bool>)
     }
 
     (enabled, disabled)
-}
-
-fn collect_system_info() -> Result<SystemInfo> {
-    // Get Homebrew prefix
-    let homebrew_prefix = get_homebrew_prefix()?;
-
-    // Get system information
-    let os_version = get_os_version();
-    let architecture = get_architecture();
-
-    Ok(SystemInfo {
-        os_version,
-        architecture,
-        homebrew_prefix,
-    })
-}
-
-fn get_homebrew_prefix() -> Result<String> {
-    let output = Command::new("brew").arg("--prefix").output()?;
-
-    if !output.status.success() {
-        return Ok("Unknown".to_string());
-    }
-
-    let prefix = String::from_utf8(output.stdout)?.trim().to_string();
-
-    Ok(prefix)
-}
-
-fn get_os_version() -> String {
-    let output = Command::new("sw_vers").arg("-productVersion").output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            format!("macOS {}", version)
-        }
-        _ => "Unknown OS".to_string(),
-    }
-}
-
-fn get_architecture() -> String {
-    let output = Command::new("uname").arg("-m").output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let arch_output = String::from_utf8_lossy(&output.stdout);
-            let arch = arch_output.trim();
-            match arch {
-                "arm64" => "Apple Silicon".to_string(),
-                "x86_64" => "Intel".to_string(),
-                _ => arch.to_string(),
-            }
-        }
-        _ => "Unknown".to_string(),
-    }
 }
 
 fn calculate_package_changes(

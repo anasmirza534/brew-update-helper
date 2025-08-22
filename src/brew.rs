@@ -22,6 +22,7 @@ pub trait BrewExecutor {
     fn get_outdated_packages(&self) -> Result<Vec<OutdatedPackage>>;
     fn upgrade_package(&self, package: &OutdatedPackage) -> Result<()>;
     fn get_version(&self) -> Result<String>;
+    fn get_system_info(&self) -> Result<crate::stats::SystemInfo>;
 }
 
 pub struct SystemBrewExecutor;
@@ -142,6 +143,79 @@ impl BrewExecutor for SystemBrewExecutor {
         let first_line = version_output.lines().next().unwrap_or("Unknown version");
         Ok(first_line.to_string())
     }
+
+    fn get_system_info(&self) -> Result<crate::stats::SystemInfo> {
+        // Get Homebrew prefix
+        let homebrew_prefix = {
+            let output = Command::new("brew").arg("--prefix").output()?;
+            if output.status.success() {
+                String::from_utf8_lossy(&output.stdout).trim().to_string()
+            } else {
+                "/usr/local".to_string() // fallback
+            }
+        };
+
+        // Get OS version with cross-platform support
+        let os_version = {
+            #[cfg(target_os = "macos")]
+            {
+                let output = Command::new("sw_vers").arg("-productVersion").output();
+                match output {
+                    Ok(out) if out.status.success() => {
+                        format!("macOS {}", String::from_utf8_lossy(&out.stdout).trim())
+                    }
+                    _ => "macOS Unknown".to_string(),
+                }
+            }
+            #[cfg(target_os = "linux")]
+            {
+                // Try to read from /etc/os-release
+                if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
+                    if let Some(line) = content.lines().find(|l| l.starts_with("PRETTY_NAME=")) {
+                        if let Some(name) = line
+                            .strip_prefix("PRETTY_NAME=")
+                            .map(|s| s.trim_matches('"'))
+                        {
+                            return Ok(crate::stats::SystemInfo {
+                                os_version: name.to_string(),
+                                architecture: get_architecture_safe(),
+                                homebrew_prefix,
+                            });
+                        }
+                    }
+                }
+                "Linux".to_string()
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            {
+                "Unknown OS".to_string()
+            }
+        };
+
+        // Get architecture
+        let architecture = get_architecture_safe();
+
+        Ok(crate::stats::SystemInfo {
+            os_version,
+            architecture,
+            homebrew_prefix,
+        })
+    }
+}
+
+fn get_architecture_safe() -> String {
+    let output = Command::new("uname").arg("-m").output();
+    match output {
+        Ok(out) if out.status.success() => {
+            let arch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            match arch.as_str() {
+                "arm64" => "Apple Silicon".to_string(),
+                "x86_64" => "Intel".to_string(),
+                _ => arch,
+            }
+        }
+        _ => "Unknown".to_string(),
+    }
 }
 
 pub fn parse_outdated_line(line: &str, package_type: PackageType) -> Option<OutdatedPackage> {
@@ -259,6 +333,14 @@ impl BrewExecutor for MockBrewExecutor {
 
     fn get_version(&self) -> Result<String> {
         Ok("Homebrew 4.1.5".to_string())
+    }
+
+    fn get_system_info(&self) -> Result<crate::stats::SystemInfo> {
+        Ok(crate::stats::SystemInfo {
+            os_version: "macOS 14.5".to_string(),
+            architecture: "Apple Silicon".to_string(),
+            homebrew_prefix: "/usr/local".to_string(),
+        })
     }
 }
 
