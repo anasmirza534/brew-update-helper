@@ -31,11 +31,37 @@ enum Commands {
     Upgrade,
 }
 
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn new() -> Result<Self> {
+        use crossterm::terminal::enable_raw_mode;
+        enable_raw_mode()?;
+        Ok(TerminalGuard)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        use crossterm::{
+            execute,
+            terminal::{disable_raw_mode, LeaveAlternateScreen},
+        };
+        use std::io::{self, Write};
+
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = io::stdout().flush();
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let executor = create_executor();
+
     // Verify brew is installed
-    verify_brew_installation()?;
+    executor.verify_installation()?;
 
     match cli.command {
         Commands::Dump => {
@@ -43,34 +69,32 @@ fn main() -> Result<()> {
             if cli.dry_run {
                 println!("(dry run mode)");
             }
-            dump_command(&cli)?;
+            dump_command(&cli, &*executor)?;
         }
         Commands::Upgrade => {
             println!("Running upgrade command...");
             if cli.dry_run {
                 println!("(dry run mode)");
             }
-            upgrade_command(&cli)?;
+            upgrade_command(&cli, &*executor)?;
         }
     }
 
     Ok(())
 }
 
-fn verify_brew_installation() -> Result<()> {
-    use std::process::Command;
-
-    let output = Command::new("brew").arg("--version").output();
-
-    match output {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            anyhow::bail!("Homebrew is not installed or not in PATH. Please install Homebrew first: https://brew.sh/");
+fn create_executor() -> Box<dyn BrewExecutor> {
+    #[cfg(test)]
+    {
+        if std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok() {
+            return Box::new(MockBrewExecutor::new());
         }
     }
+
+    Box::new(SystemBrewExecutor)
 }
 
-fn dump_command(cli: &Cli) -> Result<()> {
+fn dump_command(cli: &Cli, executor: &dyn BrewExecutor) -> Result<()> {
     let config_path = get_config_path(&cli.config)?;
 
     if cli.dry_run {
@@ -78,11 +102,11 @@ fn dump_command(cli: &Cli) -> Result<()> {
     }
 
     // Get manually installed formulae
-    let formulae = get_manually_installed_formulae()?;
+    let formulae = executor.get_manually_installed_formulae()?;
     println!("Found {} manually installed formulae", formulae.len());
 
     // Get manually installed casks
-    let casks = get_manually_installed_casks()?;
+    let casks = executor.get_manually_installed_casks()?;
     println!("Found {} manually installed casks", casks.len());
 
     // Read existing settings to preserve user selections
@@ -124,47 +148,6 @@ fn get_config_path(custom_path: &Option<String>) -> Result<PathBuf> {
         .join("brew-update-helper");
 
     Ok(config_dir.join("settings.md"))
-}
-
-fn get_manually_installed_formulae() -> Result<Vec<String>> {
-    let output = Command::new("brew")
-        .args(["leaves", "--installed-on-request"])
-        .output()?;
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "Failed to get manually installed formulae: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let packages = String::from_utf8(output.stdout)?
-        .lines()
-        .map(|line| line.trim().to_string())
-        .filter(|line| !line.is_empty())
-        .collect();
-
-    Ok(packages)
-}
-
-fn get_manually_installed_casks() -> Result<Vec<String>> {
-    // First get all installed casks
-    let all_casks_output = Command::new("brew").args(["list", "--cask"]).output()?;
-
-    if !all_casks_output.status.success() {
-        anyhow::bail!(
-            "Failed to get installed casks: {}",
-            String::from_utf8_lossy(&all_casks_output.stderr)
-        );
-    }
-
-    let all_casks: Vec<String> = String::from_utf8(all_casks_output.stdout)?
-        .lines()
-        .map(|line| line.trim().to_string())
-        .filter(|line| !line.is_empty())
-        .collect();
-
-    Ok(all_casks)
 }
 
 fn read_existing_settings(
@@ -230,7 +213,7 @@ fn generate_settings_content(
     content
 }
 
-fn upgrade_command(cli: &Cli) -> Result<()> {
+fn upgrade_command(cli: &Cli, executor: &dyn BrewExecutor) -> Result<()> {
     let config_path = get_config_path(&cli.config)?;
 
     // Read settings file
@@ -261,7 +244,7 @@ fn upgrade_command(cli: &Cli) -> Result<()> {
     println!("Checking for outdated packages...");
 
     // Get outdated packages
-    let outdated_packages = get_outdated_packages()?;
+    let outdated_packages = executor.get_outdated_packages()?;
 
     // Filter to only enabled and outdated packages
     let upgradeable_packages: Vec<&OutdatedPackage> = outdated_packages
@@ -289,7 +272,7 @@ fn upgrade_command(cli: &Cli) -> Result<()> {
     }
 
     // Execute upgrades
-    execute_upgrades(&selected_packages, cli.dry_run)?;
+    execute_upgrades(&selected_packages, cli.dry_run, executor)?;
 
     Ok(())
 }
@@ -308,38 +291,201 @@ enum PackageType {
     Cask,
 }
 
-fn get_outdated_packages() -> Result<Vec<OutdatedPackage>> {
-    let mut outdated = Vec::new();
+trait BrewExecutor {
+    fn verify_installation(&self) -> Result<()>;
+    fn get_manually_installed_formulae(&self) -> Result<Vec<String>>;
+    fn get_manually_installed_casks(&self) -> Result<Vec<String>>;
+    fn get_outdated_packages(&self) -> Result<Vec<OutdatedPackage>>;
+    fn upgrade_package(&self, package: &OutdatedPackage) -> Result<()>;
+}
 
-    // Get outdated formulae
-    let formulae_output = Command::new("brew")
-        .args(["outdated", "--formula", "--verbose"])
-        .output()?;
+struct SystemBrewExecutor;
 
-    if formulae_output.status.success() {
-        let formulae_text = String::from_utf8(formulae_output.stdout)?;
-        for line in formulae_text.lines() {
-            if let Some(package) = parse_outdated_line(line, PackageType::Formula) {
-                outdated.push(package);
+impl BrewExecutor for SystemBrewExecutor {
+    fn verify_installation(&self) -> Result<()> {
+        let output = Command::new("brew").arg("--version").output();
+        match output {
+            Ok(_) => Ok(()),
+            Err(_) => {
+                anyhow::bail!("Homebrew is not installed or not in PATH. Please install Homebrew first: https://brew.sh/");
             }
         }
     }
 
-    // Get outdated casks
-    let casks_output = Command::new("brew")
-        .args(["outdated", "--cask", "--greedy", "--verbose"])
-        .output()?;
+    fn get_manually_installed_formulae(&self) -> Result<Vec<String>> {
+        let output = Command::new("brew")
+            .args(["leaves", "--installed-on-request"])
+            .output()?;
 
-    if casks_output.status.success() {
-        let casks_text = String::from_utf8(casks_output.stdout)?;
-        for line in casks_text.lines() {
-            if let Some(package) = parse_outdated_line(line, PackageType::Cask) {
-                outdated.push(package);
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to get manually installed formulae: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let packages = String::from_utf8(output.stdout)?
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+
+        Ok(packages)
+    }
+
+    fn get_manually_installed_casks(&self) -> Result<Vec<String>> {
+        let all_casks_output = Command::new("brew").args(["list", "--cask"]).output()?;
+
+        if !all_casks_output.status.success() {
+            anyhow::bail!(
+                "Failed to get installed casks: {}",
+                String::from_utf8_lossy(&all_casks_output.stderr)
+            );
+        }
+
+        let all_casks: Vec<String> = String::from_utf8(all_casks_output.stdout)?
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+
+        Ok(all_casks)
+    }
+
+    fn get_outdated_packages(&self) -> Result<Vec<OutdatedPackage>> {
+        let mut outdated = Vec::new();
+
+        // Get outdated formulae
+        let formulae_output = Command::new("brew")
+            .args(["outdated", "--formula", "--verbose"])
+            .output()?;
+
+        if formulae_output.status.success() {
+            let formulae_text = String::from_utf8(formulae_output.stdout)?;
+            for line in formulae_text.lines() {
+                if let Some(package) = parse_outdated_line(line, PackageType::Formula) {
+                    outdated.push(package);
+                }
             }
+        }
+
+        // Get outdated casks
+        let casks_output = Command::new("brew")
+            .args(["outdated", "--cask", "--greedy", "--verbose"])
+            .output()?;
+
+        if casks_output.status.success() {
+            let casks_text = String::from_utf8(casks_output.stdout)?;
+            for line in casks_text.lines() {
+                if let Some(package) = parse_outdated_line(line, PackageType::Cask) {
+                    outdated.push(package);
+                }
+            }
+        }
+
+        Ok(outdated)
+    }
+
+    fn upgrade_package(&self, package: &OutdatedPackage) -> Result<()> {
+        let cmd = "upgrade";
+        let args = match package.package_type {
+            PackageType::Formula => vec![cmd, &package.name],
+            PackageType::Cask => vec![cmd, "--cask", &package.name],
+        };
+
+        let output = Command::new("brew").args(&args).output()?;
+
+        if !output.status.success() {
+            let error_msg = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to upgrade {}: {}", package.name, error_msg);
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+struct MockBrewExecutor {
+    formulae: Vec<String>,
+    casks: Vec<String>,
+    outdated_packages: Vec<OutdatedPackage>,
+    should_fail_verification: bool,
+}
+
+#[cfg(test)]
+impl MockBrewExecutor {
+    fn new() -> Self {
+        Self {
+            formulae: vec!["git".to_string(), "node".to_string(), "python".to_string()],
+            casks: vec![
+                "visual-studio-code".to_string(),
+                "docker".to_string(),
+                "firefox".to_string(),
+            ],
+            outdated_packages: vec![
+                OutdatedPackage {
+                    name: "git".to_string(),
+                    current_version: "2.40.0".to_string(),
+                    available_version: "2.41.0".to_string(),
+                    package_type: PackageType::Formula,
+                },
+                OutdatedPackage {
+                    name: "docker".to_string(),
+                    current_version: "4.18.0".to_string(),
+                    available_version: "4.19.0".to_string(),
+                    package_type: PackageType::Cask,
+                },
+            ],
+            should_fail_verification: false,
         }
     }
 
-    Ok(outdated)
+    fn with_failed_verification(mut self) -> Self {
+        self.should_fail_verification = true;
+        self
+    }
+
+    fn with_formulae(mut self, formulae: Vec<String>) -> Self {
+        self.formulae = formulae;
+        self
+    }
+
+    fn with_casks(mut self, casks: Vec<String>) -> Self {
+        self.casks = casks;
+        self
+    }
+
+    #[allow(dead_code)]
+    fn with_outdated_packages(mut self, packages: Vec<OutdatedPackage>) -> Self {
+        self.outdated_packages = packages;
+        self
+    }
+}
+
+#[cfg(test)]
+impl BrewExecutor for MockBrewExecutor {
+    fn verify_installation(&self) -> Result<()> {
+        if self.should_fail_verification {
+            anyhow::bail!("Homebrew is not installed or not in PATH. Please install Homebrew first: https://brew.sh/");
+        }
+        Ok(())
+    }
+
+    fn get_manually_installed_formulae(&self) -> Result<Vec<String>> {
+        Ok(self.formulae.clone())
+    }
+
+    fn get_manually_installed_casks(&self) -> Result<Vec<String>> {
+        Ok(self.casks.clone())
+    }
+
+    fn get_outdated_packages(&self) -> Result<Vec<OutdatedPackage>> {
+        Ok(self.outdated_packages.clone())
+    }
+
+    fn upgrade_package(&self, _package: &OutdatedPackage) -> Result<()> {
+        Ok(())
+    }
 }
 
 fn parse_outdated_line(line: &str, package_type: PackageType) -> Option<OutdatedPackage> {
@@ -370,10 +516,19 @@ fn parse_outdated_line(line: &str, package_type: PackageType) -> Option<Outdated
 }
 
 fn show_interactive_selection(packages: &[&OutdatedPackage]) -> Result<Vec<OutdatedPackage>> {
+    // Skip TUI in test environments to avoid terminal state issues
+    if std::env::var("CI").is_ok()
+        || std::env::var("GITHUB_ACTIONS").is_ok()
+        || std::env::var("CARGO_TEST").is_ok()
+        || cfg!(test)
+    {
+        return show_simple_selection(packages);
+    }
+
     use crossterm::{
         event::{self, Event, KeyCode, KeyEventKind},
         execute,
-        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+        terminal::{EnterAlternateScreen, LeaveAlternateScreen},
     };
     use ratatui::{
         backend::CrosstermBackend,
@@ -389,8 +544,8 @@ fn show_interactive_selection(packages: &[&OutdatedPackage]) -> Result<Vec<Outda
     let mut list_state = ListState::default();
     list_state.select(Some(0));
 
-    // Setup terminal
-    enable_raw_mode()?;
+    // Setup terminal with proper cleanup handling
+    let _guard = TerminalGuard::new()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
@@ -456,7 +611,6 @@ fn show_interactive_selection(packages: &[&OutdatedPackage]) -> Result<Vec<Outda
             if key.kind == KeyEventKind::Press {
                 match key.code {
                     KeyCode::Char('q') => {
-                        disable_raw_mode()?;
                         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                         return Ok(vec![]);
                     }
@@ -478,7 +632,6 @@ fn show_interactive_selection(packages: &[&OutdatedPackage]) -> Result<Vec<Outda
                         }
                     }
                     KeyCode::Enter => {
-                        disable_raw_mode()?;
                         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                         let result = packages
                             .iter()
@@ -495,7 +648,11 @@ fn show_interactive_selection(packages: &[&OutdatedPackage]) -> Result<Vec<Outda
     }
 }
 
-fn execute_upgrades(packages: &[OutdatedPackage], dry_run: bool) -> Result<()> {
+fn execute_upgrades(
+    packages: &[OutdatedPackage],
+    dry_run: bool,
+    executor: &dyn BrewExecutor,
+) -> Result<()> {
     println!(
         "\n{} upgrade for {} packages:",
         if dry_run {
@@ -514,16 +671,6 @@ fn execute_upgrades(packages: &[OutdatedPackage], dry_run: bool) -> Result<()> {
     let mut failed_upgrades = 0;
 
     for pkg in packages {
-        let cmd = match pkg.package_type {
-            PackageType::Formula => "upgrade",
-            PackageType::Cask => "upgrade",
-        };
-
-        let args = match pkg.package_type {
-            PackageType::Formula => vec![cmd, &pkg.name],
-            PackageType::Cask => vec![cmd, "--cask", &pkg.name],
-        };
-
         println!(
             "  {} {} {} → {}",
             if dry_run {
@@ -537,23 +684,23 @@ fn execute_upgrades(packages: &[OutdatedPackage], dry_run: bool) -> Result<()> {
         );
 
         if !dry_run {
-            let output = Command::new("brew").args(&args).output()?;
-
-            if !output.status.success() {
-                let error_msg = String::from_utf8_lossy(&output.stderr);
-                eprintln!("    ❌ Failed to upgrade {}: {}", pkg.name, error_msg);
-                log_operation(&format!(
-                    "FAILED: {} {} → {} - {}",
-                    pkg.name, pkg.current_version, pkg.available_version, error_msg
-                ))?;
-                failed_upgrades += 1;
-            } else {
-                println!("    ✅ Successfully upgraded {}", pkg.name);
-                log_operation(&format!(
-                    "SUCCESS: {} {} → {}",
-                    pkg.name, pkg.current_version, pkg.available_version
-                ))?;
-                successful_upgrades += 1;
+            match executor.upgrade_package(pkg) {
+                Ok(_) => {
+                    println!("    ✅ Successfully upgraded {}", pkg.name);
+                    log_operation(&format!(
+                        "SUCCESS: {} {} → {}",
+                        pkg.name, pkg.current_version, pkg.available_version
+                    ))?;
+                    successful_upgrades += 1;
+                }
+                Err(e) => {
+                    eprintln!("    ❌ Failed to upgrade {}: {}", pkg.name, e);
+                    log_operation(&format!(
+                        "FAILED: {} {} → {} - {}",
+                        pkg.name, pkg.current_version, pkg.available_version, e
+                    ))?;
+                    failed_upgrades += 1;
+                }
             }
         }
     }
@@ -645,4 +792,188 @@ fn get_log_path() -> Result<PathBuf> {
         .join("brew-update-helper");
 
     Ok(config_dir.join("upgrade.log"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_parse_outdated_line_formula() {
+        let line = "git (2.40.0) < 2.41.0";
+        let result = parse_outdated_line(line, PackageType::Formula);
+
+        assert!(result.is_some());
+        let package = result.unwrap();
+        assert_eq!(package.name, "git");
+        assert_eq!(package.current_version, "2.40.0");
+        assert_eq!(package.available_version, "2.41.0");
+        assert!(matches!(package.package_type, PackageType::Formula));
+    }
+
+    #[test]
+    fn test_parse_outdated_line_cask() {
+        let line = "visual-studio-code (1.79.0) != 1.80.0";
+        let result = parse_outdated_line(line, PackageType::Cask);
+
+        assert!(result.is_some());
+        let package = result.unwrap();
+        assert_eq!(package.name, "visual-studio-code");
+        assert_eq!(package.current_version, "1.79.0");
+        assert_eq!(package.available_version, "1.80.0");
+        assert!(matches!(package.package_type, PackageType::Cask));
+    }
+
+    #[test]
+    fn test_parse_outdated_line_invalid() {
+        let line = "invalid line format";
+        let result = parse_outdated_line(line, PackageType::Formula);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_generate_settings_content() {
+        let formulae = vec!["git".to_string(), "node".to_string()];
+        let casks = vec!["docker".to_string(), "firefox".to_string()];
+        let mut existing_settings = HashMap::new();
+        existing_settings.insert("git".to_string(), true);
+        existing_settings.insert("node".to_string(), false);
+        existing_settings.insert("docker".to_string(), false);
+
+        let content = generate_settings_content(&formulae, &casks, &existing_settings);
+
+        assert!(content.contains("# Brew Auto-Update Settings"));
+        assert!(content.contains("## Formulae"));
+        assert!(content.contains("## Casks"));
+        assert!(content.contains("- [x] git"));
+        assert!(content.contains("- [ ] node"));
+        assert!(content.contains("- [ ] docker"));
+        assert!(content.contains("- [x] firefox")); // New package defaults to enabled
+    }
+
+    #[test]
+    fn test_read_existing_settings() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let settings_path = temp_dir.path().join("settings.md");
+
+        let content = r#"# Brew Auto-Update Settings
+
+Generated on: 2024-08-22 10:30:00 UTC
+
+## Formulae
+
+- [x] git
+- [ ] node
+- [x] python
+
+## Casks
+
+- [ ] docker
+- [x] firefox"#;
+
+        std::fs::write(&settings_path, content)?;
+
+        let settings = read_existing_settings(&settings_path)?;
+
+        assert_eq!(settings.get("git"), Some(&true));
+        assert_eq!(settings.get("node"), Some(&false));
+        assert_eq!(settings.get("python"), Some(&true));
+        assert_eq!(settings.get("docker"), Some(&false));
+        assert_eq!(settings.get("firefox"), Some(&true));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_config_path_development() -> Result<()> {
+        // Simulate development environment
+        std::env::set_var("CARGO_MANIFEST_DIR", "/some/path");
+
+        let path = get_config_path(&None)?;
+        assert_eq!(path, PathBuf::from("./brew-settings.md"));
+
+        std::env::remove_var("CARGO_MANIFEST_DIR");
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_config_path_custom() -> Result<()> {
+        let custom_path = Some("/custom/path/settings.md".to_string());
+        let path = get_config_path(&custom_path)?;
+        assert_eq!(path, PathBuf::from("/custom/path/settings.md"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_mock_brew_executor() -> Result<()> {
+        let executor = MockBrewExecutor::new();
+
+        // Test verification
+        assert!(executor.verify_installation().is_ok());
+
+        // Test formulae
+        let formulae = executor.get_manually_installed_formulae()?;
+        assert_eq!(formulae.len(), 3);
+        assert!(formulae.contains(&"git".to_string()));
+
+        // Test casks
+        let casks = executor.get_manually_installed_casks()?;
+        assert_eq!(casks.len(), 3);
+        assert!(casks.contains(&"docker".to_string()));
+
+        // Test outdated packages
+        let outdated = executor.get_outdated_packages()?;
+        assert_eq!(outdated.len(), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mock_brew_executor_with_failed_verification() {
+        let executor = MockBrewExecutor::new().with_failed_verification();
+        assert!(executor.verify_installation().is_err());
+    }
+
+    #[test]
+    fn test_mock_brew_executor_with_custom_data() -> Result<()> {
+        let custom_formulae = vec!["custom-formula".to_string()];
+        let custom_casks = vec!["custom-cask".to_string()];
+
+        let executor = MockBrewExecutor::new()
+            .with_formulae(custom_formulae.clone())
+            .with_casks(custom_casks.clone());
+
+        let formulae = executor.get_manually_installed_formulae()?;
+        let casks = executor.get_manually_installed_casks()?;
+
+        assert_eq!(formulae, custom_formulae);
+        assert_eq!(casks, custom_casks);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_dump_command_with_mock() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config_path = temp_dir.path().join("settings.md");
+
+        let executor = MockBrewExecutor::new();
+        let cli = Cli {
+            command: Commands::Dump,
+            dry_run: false,
+            config: Some(config_path.to_string_lossy().to_string()),
+        };
+
+        dump_command(&cli, &executor)?;
+
+        assert!(config_path.exists());
+        let content = std::fs::read_to_string(&config_path)?;
+        assert!(content.contains("# Brew Auto-Update Settings"));
+        assert!(content.contains("git"));
+        assert!(content.contains("docker"));
+
+        Ok(())
+    }
 }
