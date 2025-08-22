@@ -207,18 +207,22 @@ fn generate_settings_content(
         Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
     ));
 
-    // Formulae section
+    // Formulae section - sort alphabetically
     content.push_str("## Formulae\n\n");
-    for formula in formulae {
-        let enabled = existing_settings.get(formula).copied().unwrap_or(true);
+    let mut sorted_formulae = formulae.to_vec();
+    sorted_formulae.sort();
+    for formula in sorted_formulae {
+        let enabled = existing_settings.get(&formula).copied().unwrap_or(true);
         let checkbox = if enabled { "[x]" } else { "[ ]" };
         content.push_str(&format!("- {} {}\n", checkbox, formula));
     }
 
-    // Casks section
+    // Casks section - sort alphabetically
     content.push_str("\n## Casks\n\n");
-    for cask in casks {
-        let enabled = existing_settings.get(cask).copied().unwrap_or(true);
+    let mut sorted_casks = casks.to_vec();
+    sorted_casks.sort();
+    for cask in sorted_casks {
+        let enabled = existing_settings.get(&cask).copied().unwrap_or(true);
         let checkbox = if enabled { "[x]" } else { "[ ]" };
         content.push_str(&format!("- {} {}\n", checkbox, cask));
     }
