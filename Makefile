@@ -3,3 +3,8 @@ default:
 
 claude:
 	npx @anthropic-ai/claude-code
+
+ci-cargo-cmds:
+	cargo test --verbose
+	cargo fmt --all -- --check
+	cargo clippy --all-targets --all-features -- -D warnings

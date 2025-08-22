@@ -2,13 +2,16 @@ pub mod brew;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod stats;
 pub mod ui;
 pub mod utils;
 
 // Re-export main types for convenience
 pub use brew::{BrewExecutor, OutdatedPackage, PackageType};
 pub use cli::{Cli, Commands};
-pub use config::{generate_settings_content, get_config_path, read_existing_settings};
+pub use config::{
+    generate_settings_content, get_config_path, read_existing_settings, read_previous_packages,
+};
 pub use utils::{get_log_path, log_operation};
 
 use anyhow::Result;
