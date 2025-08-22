@@ -162,6 +162,12 @@ pub struct MockBrewExecutor {
     should_fail_verification: bool,
 }
 
+impl Default for MockBrewExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockBrewExecutor {
     pub fn new() -> Self {
         Self {
