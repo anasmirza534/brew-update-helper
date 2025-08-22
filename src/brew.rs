@@ -155,7 +155,6 @@ pub fn parse_outdated_line(line: &str, package_type: PackageType) -> Option<Outd
     None
 }
 
-#[cfg(test)]
 pub struct MockBrewExecutor {
     formulae: Vec<String>,
     casks: Vec<String>,
@@ -163,7 +162,6 @@ pub struct MockBrewExecutor {
     should_fail_verification: bool,
 }
 
-#[cfg(test)]
 impl MockBrewExecutor {
     pub fn new() -> Self {
         Self {
@@ -213,7 +211,6 @@ impl MockBrewExecutor {
     }
 }
 
-#[cfg(test)]
 impl BrewExecutor for MockBrewExecutor {
     fn verify_installation(&self) -> Result<()> {
         if self.should_fail_verification {

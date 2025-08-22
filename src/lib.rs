@@ -41,11 +41,9 @@ pub fn run() -> Result<()> {
 }
 
 fn create_executor() -> Box<dyn BrewExecutor> {
-    #[cfg(test)]
-    {
-        if std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok() {
-            return Box::new(brew::MockBrewExecutor::new());
-        }
+    // Use mock executor in CI environments or when explicitly requested
+    if std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok() || std::env::var("MOCK_BREW").is_ok() {
+        return Box::new(brew::MockBrewExecutor::new());
     }
 
     Box::new(brew::SystemBrewExecutor)
