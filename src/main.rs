@@ -368,7 +368,8 @@ fn parse_outdated_line(line: &str, package_type: PackageType) -> Option<Outdated
 fn show_interactive_selection(packages: &[&OutdatedPackage]) -> Result<Vec<OutdatedPackage>> {
     use crossterm::{
         event::{self, Event, KeyCode, KeyEventKind},
-        terminal::{disable_raw_mode, enable_raw_mode},
+        execute,
+        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     };
     use ratatui::{
         backend::CrosstermBackend,
@@ -384,8 +385,10 @@ fn show_interactive_selection(packages: &[&OutdatedPackage]) -> Result<Vec<Outda
     let mut list_state = ListState::default();
     list_state.select(Some(0));
 
+    // Setup terminal
     enable_raw_mode()?;
-    let stdout = std::io::stdout();
+    let mut stdout = std::io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -450,6 +453,7 @@ fn show_interactive_selection(packages: &[&OutdatedPackage]) -> Result<Vec<Outda
                 match key.code {
                     KeyCode::Char('q') => {
                         disable_raw_mode()?;
+                        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                         return Ok(vec![]);
                     }
                     KeyCode::Up => {
@@ -471,6 +475,7 @@ fn show_interactive_selection(packages: &[&OutdatedPackage]) -> Result<Vec<Outda
                     }
                     KeyCode::Enter => {
                         disable_raw_mode()?;
+                        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                         let result = packages
                             .iter()
                             .enumerate()
