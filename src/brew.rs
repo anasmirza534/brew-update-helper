@@ -21,6 +21,7 @@ pub trait BrewExecutor {
     fn get_manually_installed_casks(&self) -> Result<Vec<String>>;
     fn get_outdated_packages(&self) -> Result<Vec<OutdatedPackage>>;
     fn upgrade_package(&self, package: &OutdatedPackage) -> Result<()>;
+    fn get_version(&self) -> Result<String>;
 }
 
 pub struct SystemBrewExecutor;
@@ -125,6 +126,21 @@ impl BrewExecutor for SystemBrewExecutor {
         }
 
         Ok(())
+    }
+
+    fn get_version(&self) -> Result<String> {
+        let output = Command::new("brew").arg("--version").output()?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to get Homebrew version: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let version_output = String::from_utf8_lossy(&output.stdout);
+        let first_line = version_output.lines().next().unwrap_or("Unknown version");
+        Ok(first_line.to_string())
     }
 }
 
@@ -239,6 +255,10 @@ impl BrewExecutor for MockBrewExecutor {
 
     fn upgrade_package(&self, _package: &OutdatedPackage) -> Result<()> {
         Ok(())
+    }
+
+    fn get_version(&self) -> Result<String> {
+        Ok("Homebrew 4.1.5".to_string())
     }
 }
 

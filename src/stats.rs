@@ -68,7 +68,7 @@ impl PackageStats {
         let total_outdated = outdated_formulae + outdated_casks;
 
         // Collect system information
-        let homebrew_version = get_homebrew_version()?;
+        let homebrew_version = executor.get_version()?;
         let system_info = collect_system_info()?;
 
         // Calculate package changes
@@ -196,25 +196,6 @@ fn count_enabled_disabled(packages: &[String], settings: &HashMap<String, bool>)
     }
 
     (enabled, disabled)
-}
-
-fn get_homebrew_version() -> Result<String> {
-    let output = Command::new("brew").arg("--version").output()?;
-
-    if !output.status.success() {
-        return Ok("Unknown".to_string());
-    }
-
-    let version_output = String::from_utf8(output.stdout)?;
-    // Extract first line which contains the version
-    let version = version_output
-        .lines()
-        .next()
-        .unwrap_or("Unknown")
-        .trim()
-        .to_string();
-
-    Ok(version)
 }
 
 fn collect_system_info() -> Result<SystemInfo> {
