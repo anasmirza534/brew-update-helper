@@ -3,7 +3,10 @@ use std::fs;
 
 use crate::brew::{BrewExecutor, OutdatedPackage};
 use crate::cli::Cli;
-use crate::config::{generate_settings_content, get_config_path, read_existing_settings};
+use crate::config::{
+    generate_settings_content, get_config_path, read_existing_settings, read_previous_packages,
+};
+use crate::stats::PackageStats;
 use crate::ui::{show_interactive_selection, show_simple_selection};
 use crate::utils::log_operation;
 
@@ -25,8 +28,30 @@ pub fn dump_command(cli: &Cli, executor: &dyn BrewExecutor) -> Result<()> {
     // Read existing settings to preserve user selections
     let existing_settings = read_existing_settings(&config_path)?;
 
-    // Generate new settings content
-    let settings_content = generate_settings_content(&formulae, &casks, &existing_settings);
+    // Read previous packages for change tracking
+    let (previous_formulae, previous_casks) = read_previous_packages(&config_path)?;
+
+    // Collect package statistics
+    let stats = PackageStats::collect(
+        executor,
+        &formulae,
+        &casks,
+        &existing_settings,
+        if previous_formulae.is_empty() {
+            None
+        } else {
+            Some(&previous_formulae)
+        },
+        if previous_casks.is_empty() {
+            None
+        } else {
+            Some(&previous_casks)
+        },
+    )?;
+
+    // Generate new settings content with stats
+    let settings_content =
+        generate_settings_content(&formulae, &casks, &existing_settings, Some(&stats));
 
     if cli.dry_run {
         println!("\nSettings content would be:");
@@ -208,6 +233,37 @@ mod tests {
         assert!(content.contains("# Brew Auto-Update Settings"));
         assert!(content.contains("git"));
         assert!(content.contains("docker"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_dump_command_includes_stats() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config_path = temp_dir.path().join("settings.md");
+
+        let executor = MockBrewExecutor::new();
+        let cli = Cli {
+            command: Commands::Dump,
+            dry_run: false,
+            config: Some(config_path.to_string_lossy().to_string()),
+        };
+
+        dump_command(&cli, &executor)?;
+
+        assert!(config_path.exists());
+        let content = std::fs::read_to_string(&config_path)?;
+
+        // Check that stats section is included
+        assert!(content.contains("## Statistics"));
+        assert!(content.contains("**Total Packages**"));
+        assert!(content.contains("**Homebrew Version**"));
+        assert!(content.contains("**System**"));
+        assert!(content.contains("**Outdated Packages**"));
+
+        // Check that package sections are still present
+        assert!(content.contains("## Formulae"));
+        assert!(content.contains("## Casks"));
 
         Ok(())
     }

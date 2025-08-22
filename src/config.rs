@@ -47,10 +47,53 @@ pub fn read_existing_settings(config_path: &PathBuf) -> Result<HashMap<String, b
     Ok(settings)
 }
 
+pub fn read_previous_packages(config_path: &PathBuf) -> Result<(Vec<String>, Vec<String>)> {
+    let mut formulae = Vec::new();
+    let mut casks = Vec::new();
+    let mut current_section = "";
+
+    if !config_path.exists() {
+        return Ok((formulae, casks));
+    }
+
+    let content = fs::read_to_string(config_path)?;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line == "## Formulae" {
+            current_section = "formulae";
+        } else if line == "## Casks" {
+            current_section = "casks";
+        } else if line.starts_with("- [") {
+            // Extract package name from checkbox line
+            if let Some(package) = extract_package_name(line) {
+                match current_section {
+                    "formulae" => formulae.push(package),
+                    "casks" => casks.push(package),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    Ok((formulae, casks))
+}
+
+fn extract_package_name(line: &str) -> Option<String> {
+    if line.starts_with("- [x] ") {
+        line.strip_prefix("- [x] ").map(|s| s.trim().to_string())
+    } else if line.starts_with("- [ ] ") {
+        line.strip_prefix("- [ ] ").map(|s| s.trim().to_string())
+    } else {
+        None
+    }
+}
+
 pub fn generate_settings_content(
     formulae: &[String],
     casks: &[String],
     existing_settings: &HashMap<String, bool>,
+    stats: Option<&crate::stats::PackageStats>,
 ) -> String {
     let mut content = String::new();
 
@@ -59,6 +102,11 @@ pub fn generate_settings_content(
         "Generated on: {}\n\n",
         Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
     ));
+
+    // Add stats section if provided
+    if let Some(stats) = stats {
+        content.push_str(&stats.format_as_markdown());
+    }
 
     // Formulae section - sort alphabetically
     content.push_str("## Formulae\n\n");
@@ -97,7 +145,7 @@ mod tests {
         existing_settings.insert("node".to_string(), false);
         existing_settings.insert("docker".to_string(), false);
 
-        let content = generate_settings_content(&formulae, &casks, &existing_settings);
+        let content = generate_settings_content(&formulae, &casks, &existing_settings, None);
 
         assert!(content.contains("# Brew Auto-Update Settings"));
         assert!(content.contains("## Formulae"));
@@ -151,6 +199,50 @@ Generated on: 2024-08-22 10:30:00 UTC
 
         std::env::remove_var("CARGO_MANIFEST_DIR");
         Ok(())
+    }
+
+    #[test]
+    fn test_read_previous_packages() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let settings_path = temp_dir.path().join("settings.md");
+
+        let content = r#"# Brew Auto-Update Settings
+
+Generated on: 2024-08-22 10:30:00 UTC
+
+## Formulae
+
+- [x] git
+- [ ] node
+- [x] python
+
+## Casks
+
+- [ ] docker
+- [x] firefox"#;
+
+        std::fs::write(&settings_path, content)?;
+
+        let (formulae, casks) = read_previous_packages(&settings_path)?;
+
+        assert_eq!(formulae.len(), 3);
+        assert!(formulae.contains(&"git".to_string()));
+        assert!(formulae.contains(&"node".to_string()));
+        assert!(formulae.contains(&"python".to_string()));
+
+        assert_eq!(casks.len(), 2);
+        assert!(casks.contains(&"docker".to_string()));
+        assert!(casks.contains(&"firefox".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_extract_package_name() {
+        assert_eq!(extract_package_name("- [x] git"), Some("git".to_string()));
+        assert_eq!(extract_package_name("- [ ] node"), Some("node".to_string()));
+        assert_eq!(extract_package_name("## Formulae"), None);
+        assert_eq!(extract_package_name("random text"), None);
     }
 
     #[test]
